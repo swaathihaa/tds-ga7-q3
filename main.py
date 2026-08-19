@@ -1,5 +1,3 @@
-from typing import Any
-
 from fastapi import FastAPI, Request
 
 app = FastAPI()
@@ -49,9 +47,9 @@ def approve():
 @app.post("/terraform/plan")
 async def terraform_plan(request: Request):
 
-    # --------------------------------------------------
-    # 1. REQUEST / NESTED OBJECT TYPES
-    # --------------------------------------------------
+    # ==================================================
+    # 1. INVALID_PLAN
+    # ==================================================
 
     try:
         body = await request.json()
@@ -61,65 +59,101 @@ async def terraform_plan(request: Request):
     if not isinstance(body, dict):
         return reject("INVALID_PLAN")
 
-    # Required top-level fields and types
-    if not isinstance(body.get("environment"), str):
+    # All required top-level fields must exist.
+    required_top_level = {
+        "environment",
+        "state",
+        "providerVersion",
+        "destroyApproved",
+        "resource",
+    }
+
+    if not required_top_level.issubset(body.keys()):
         return reject("INVALID_PLAN")
 
-    if not isinstance(body.get("state"), dict):
+    # Top-level types
+    if not isinstance(body["environment"], str):
         return reject("INVALID_PLAN")
 
-    if not isinstance(body.get("providerVersion"), str):
+    if not isinstance(body["state"], dict):
         return reject("INVALID_PLAN")
 
-    if not isinstance(body.get("destroyApproved"), bool):
+    if not isinstance(body["providerVersion"], str):
         return reject("INVALID_PLAN")
 
-    if not isinstance(body.get("resource"), dict):
+    if not isinstance(body["destroyApproved"], bool):
+        return reject("INVALID_PLAN")
+
+    if not isinstance(body["resource"], dict):
         return reject("INVALID_PLAN")
 
     state = body["state"]
     resource = body["resource"]
 
-    # State nested types
-    if not isinstance(state.get("backend"), str):
+    # State must contain both required fields.
+    if not {"backend", "locked"}.issubset(state.keys()):
         return reject("INVALID_PLAN")
 
-    if not isinstance(state.get("locked"), bool):
+    if not isinstance(state["backend"], str):
         return reject("INVALID_PLAN")
 
-    # Resource nested types
-    if not isinstance(resource.get("address"), str):
+    if not isinstance(state["locked"], bool):
         return reject("INVALID_PLAN")
 
-    if not isinstance(resource.get("type"), str):
+    # Resource must contain every field shown in the schema.
+    required_resource = {
+        "address",
+        "type",
+        "action",
+        "labels",
+        "secret",
+        "forceDestroy",
+    }
+
+    if not required_resource.issubset(resource.keys()):
         return reject("INVALID_PLAN")
 
-    if not isinstance(resource.get("action"), str):
+    # Resource field types
+    if not isinstance(resource["address"], str):
         return reject("INVALID_PLAN")
 
-    if not isinstance(resource.get("labels"), dict):
+    if not isinstance(resource["type"], str):
         return reject("INVALID_PLAN")
 
-    # secret must be null or string
-    secret = resource.get("secret")
+    if not isinstance(resource["action"], str):
+        return reject("INVALID_PLAN")
+
+    # IMPORTANT:
+    # action is explicitly create | update | delete
+    if resource["action"] not in VALID_ACTIONS:
+        return reject("INVALID_PLAN")
+
+    if not isinstance(resource["labels"], dict):
+        return reject("INVALID_PLAN")
+
+    secret = resource["secret"]
 
     if secret is not None and not isinstance(secret, str):
         return reject("INVALID_PLAN")
 
-    # forceDestroy must be boolean
-    if not isinstance(resource.get("forceDestroy"), bool):
+    if not isinstance(resource["forceDestroy"], bool):
         return reject("INVALID_PLAN")
 
-    # --------------------------------------------------
-    # 2. ENVIRONMENT
-    # --------------------------------------------------
+    # Label values are strings.
+    for key, value in resource["labels"].items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            return reject("INVALID_PLAN")
+
+    # ==================================================
+    # 2. ENVIRONMENT_MISMATCH
+    # ==================================================
 
     if body["environment"] != WORKSPACE:
         return reject("ENVIRONMENT_MISMATCH")
 
-    # --------------------------------------------------
-    # 3. STATE
-    # --------------------------------------------------
+    # ==================================================
+    # 3. STATE_UNSAFE
+    # ==================================================
 
     if state["backend"] not in VALID_BACKENDS:
         return reject("STATE_UNSAFE")
@@ -127,9 +161,9 @@ async def terraform_plan(request: Request):
     if state["locked"] is not True:
         return reject("STATE_UNSAFE")
 
-    # --------------------------------------------------
-    # 4. PROVIDER VERSION
-    # --------------------------------------------------
+    # ==================================================
+    # 4. UNPINNED_PROVIDER
+    # ==================================================
 
     provider = body["providerVersion"]
 
@@ -140,9 +174,9 @@ async def terraform_plan(request: Request):
     }:
         return reject("UNPINNED_PROVIDER")
 
-    # --------------------------------------------------
-    # 5. REQUIRED LABELS
-    # --------------------------------------------------
+    # ==================================================
+    # 5. MISSING_LABELS
+    # ==================================================
 
     labels = resource["labels"]
 
@@ -150,17 +184,17 @@ async def terraform_plan(request: Request):
         if labels.get(key) != expected:
             return reject("MISSING_LABELS")
 
-    # --------------------------------------------------
-    # 6. SECRET
-    # --------------------------------------------------
+    # ==================================================
+    # 6. PLAINTEXT_SECRET
+    # ==================================================
 
     if secret is not None:
         if secret == "" or not secret.startswith("secret://"):
             return reject("PLAINTEXT_SECRET")
 
-    # --------------------------------------------------
-    # 7. DESTRUCTIVE DELETE
-    # --------------------------------------------------
+    # ==================================================
+    # 7. DELETE_NOT_APPROVED
+    # ==================================================
 
     if (
         resource["action"] == "delete"
@@ -169,9 +203,9 @@ async def terraform_plan(request: Request):
         if body["destroyApproved"] is not True:
             return reject("DELETE_NOT_APPROVED")
 
-    # --------------------------------------------------
-    # 8. FORCE DESTROY
-    # --------------------------------------------------
+    # ==================================================
+    # 8. FORCE_DESTROY
+    # ==================================================
 
     if (
         body["environment"] == WORKSPACE
@@ -180,9 +214,9 @@ async def terraform_plan(request: Request):
     ):
         return reject("FORCE_DESTROY")
 
-    # --------------------------------------------------
-    # EVERYTHING PASSED
-    # --------------------------------------------------
+    # ==================================================
+    # ALL RULES PASSED
+    # ==================================================
 
     return approve()
 
